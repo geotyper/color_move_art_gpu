@@ -1,0 +1,77 @@
+#version 430
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct Particle {
+    vec4 pos;       // xy: position, w: blue
+    vec4 velColor;  // xy: velocity, zw: red/green
+};
+
+layout(std430, binding = 0) buffer ParticlesBuf {
+    Particle particles[];
+};
+
+layout(std140, binding = 1) uniform SimParams {
+    vec4 canvas_dt_gravity; // x,y: canvas size, z: dt, w: gravity
+};
+
+layout(binding = 2, rgba16f) uniform coherent image2D gridVel; // xy velocity sum
+layout(binding = 3, r16f)    uniform coherent image2D gridMass; // mass
+
+const float INV_H = 1.0 / 4.0; // grid cell size in pixels (assumed 4)
+
+vec2 toGrid(vec2 pos) { return pos * INV_H; }
+
+void splatToGrid(vec2 pos, vec2 vel) {
+    vec2 gpos = toGrid(pos);
+    ivec2 base = ivec2(floor(gpos));
+    vec2 frac = gpos - vec2(base);
+    vec2 wx = vec2(1.0 - frac.x, frac.x);
+    vec2 wy = vec2(1.0 - frac.y, frac.y);
+
+    float w00 = wx.x * wy.x;
+    float w10 = wx.y * wy.x;
+    float w01 = wx.x * wy.y;
+    float w11 = wx.y * wy.y;
+
+    imageStore(gridMass, base + ivec2(0,0), imageLoad(gridMass, base + ivec2(0,0)) + vec4(w00));
+    imageStore(gridMass, base + ivec2(1,0), imageLoad(gridMass, base + ivec2(1,0)) + vec4(w10));
+    imageStore(gridMass, base + ivec2(0,1), imageLoad(gridMass, base + ivec2(0,1)) + vec4(w01));
+    imageStore(gridMass, base + ivec2(1,1), imageLoad(gridMass, base + ivec2(1,1)) + vec4(w11));
+
+    vec4 v = vec4(vel, pos);
+    imageStore(gridVel, base + ivec2(0,0), imageLoad(gridVel, base + ivec2(0,0)) + v * w00);
+    imageStore(gridVel, base + ivec2(1,0), imageLoad(gridVel, base + ivec2(1,0)) + v * w10);
+    imageStore(gridVel, base + ivec2(0,1), imageLoad(gridVel, base + ivec2(0,1)) + v * w01);
+    imageStore(gridVel, base + ivec2(1,1), imageLoad(gridVel, base + ivec2(1,1)) + v * w11);
+}
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= particles.length())
+        return;
+
+    vec2 canvasSize = canvas_dt_gravity.xy;
+    float dt = canvas_dt_gravity.z;
+    float g = canvas_dt_gravity.w;
+
+    Particle p = particles[idx];
+    vec2 pos = p.pos.xy;
+    vec2 vel = p.velColor.xy;
+
+    vel.y += g * dt;
+    vel *= 0.98; // global drag
+    pos += vel * dt;
+
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x = -vel.x * 0.8; }
+    if (pos.x > canvasSize.x) { pos.x = canvasSize.x; vel.x = -vel.x * 0.8; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y = -vel.y * 0.8; }
+    if (pos.y > canvasSize.y) { pos.y = canvasSize.y; vel.y = -vel.y * 0.8; }
+
+    p.pos.xy = pos;
+    p.velColor.xy = vel;
+    particles[idx] = p;
+
+    splatToGrid(pos, vel);
+}

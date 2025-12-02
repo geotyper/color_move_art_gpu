@@ -38,6 +38,30 @@ qt_add_shaders(color_move_art "rhi_shaders"
     FILES ${RHI_SHADERS}
 )
 
+# Desktop-only shaders (compute with images).
+qt_add_shaders(color_move_art "desktop_shaders"
+    GLSL "430"
+    HLSL 50
+    MSL 12
+    PREFIX "/shaders"
+    FILES
+        shaders/grid_clear.comp
+        shaders/grid_smooth.comp
+        shaders/grid_normalize.comp
+        shaders/grid_divergence.comp
+        shaders/grid_jacobi.comp
+        shaders/grid_subtract_pressure.comp
+        shaders/particles_p2g.comp
+        shaders/particles_g2p.comp
+)
+# Desktop-only grid clear shader (no ES).
+qt_add_shaders(color_move_art "grid_clear_shader"
+    GLSL "430"
+    HLSL 50
+    MSL 12
+    PREFIX "/shaders"
+    FILES shaders/grid_clear.comp
+)
 target_link_libraries(color_move_art PRIVATE
     Qt6::Core
     Qt6::Gui

@@ -9,23 +9,24 @@ layout(location = 0) in vec4 aPosColor; // xy: position, zw: red/green (blue bak
 noperspective layout(location = 0) out vec3 vColor;
 noperspective layout(location = 1) out vec2 vOffset;
 noperspective layout(location = 2) out float vRadius;
+noperspective layout(location = 3) out float vNoiseSeed;
 
-// Nine vertices forming a 3x3 grid around the center so the fragment shader can discard corners.
-const vec2 corners[9] = vec2[](
-    vec2(-1.0, -1.0), vec2(0.0, -1.0), vec2(1.0, -1.0),
-    vec2(-1.0,  0.0), vec2(0.0,  0.0), vec2(1.0,  0.0),
-    vec2(-1.0,  1.0), vec2(0.0,  1.0), vec2(1.0,  1.0)
+// Five vertices forming a quad with center for distortion.
+const vec2 corners[5] = vec2[](
+    vec2(-1.0, -1.0),
+    vec2(1.0, -1.0),
+    vec2(1.0, 1.0),
+    vec2(-1.0, 1.0),
+    vec2(0.0, 0.0)
 );
 
-const uint idxs[24] = uint[](
+const uint idxs[18] = uint[](
     0u, 1u, 4u,
-    0u, 4u, 3u,
-    1u, 2u, 5u,
-    1u, 5u, 4u,
-    3u, 4u, 7u,
-    3u, 7u, 6u,
-    4u, 5u, 8u,
-    4u, 8u, 7u
+    1u, 2u, 4u,
+    2u, 3u, 4u,
+    3u, 0u, 4u,
+    0u, 1u, 2u,
+    0u, 2u, 3u
 );
 
 void main()
@@ -46,4 +47,5 @@ void main()
     vColor = vec3(p.z, p.w, 0.5);
     vOffset = corner;
     vRadius = radius;
+    vNoiseSeed = float(gl_InstanceIndex) * 0.731 + float(gl_VertexIndex) * 0.123;
 }

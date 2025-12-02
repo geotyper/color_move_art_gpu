@@ -1,0 +1,26 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0, rgba16f) uniform coherent image2D gridVel; // xy sum, zw pos sum
+layout(binding = 1, r16f)    uniform coherent image2D gridMass;
+
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(gridVel);
+    if (gid.x >= size.x || gid.y >= size.y)
+        return;
+
+    float m = imageLoad(gridMass, gid).x;
+    vec4 v = imageLoad(gridVel, gid);
+    if (m > 1e-4) {
+        v.xy /= m;
+        v.zw /= m; // pos centroid
+    } else {
+        v.xy = vec2(0.0);
+        v.zw = vec2(0.0);
+    }
+    imageStore(gridVel, gid, v);
+    imageStore(gridMass, gid, vec4(m));
+}

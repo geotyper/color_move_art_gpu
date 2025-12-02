@@ -1,0 +1,16 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0, rgba16f) uniform image2D velGrid; // xy velocity, zw unused
+layout(binding = 1, r16f)   uniform image2D massGrid; // mass/density
+
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= imageSize(velGrid).x || gid.y >= imageSize(velGrid).y)
+        return;
+
+    imageStore(velGrid, gid, vec4(0.0));
+    imageStore(massGrid, gid, vec4(0.0));
+}

@@ -21,7 +21,10 @@ MpmRenderer::MpmRenderer(QWindow *window)
 {
 }
 
-MpmRenderer::~MpmRenderer() = default;
+MpmRenderer::~MpmRenderer()
+{
+    shutdown();
+}
 
 void MpmRenderer::resize(const QSize &size)
 {
@@ -36,13 +39,21 @@ void MpmRenderer::resize(const QSize &size)
         m_canvasRp[i].reset();
         m_presentBindings[i].reset();
         m_blurBindings[i].reset();
+        m_blurComputeBindings[i].reset();
     }
     m_splatBindings.reset();
     m_presentPipeline.reset();
     m_splatPipeline.reset();
     m_blurPipeline.reset();
+    m_blurComputePipeline.reset();
+    m_gridClearPipeline.reset();
+    m_gridNormalizePipeline.reset();
     m_instanceBuf.reset();
     m_blurParamsBuf.reset();
+    m_gridBindings.reset();
+    m_gridVel.reset();
+    m_gridMass.reset();
+    m_canvasInitialized = false;
 }
 
 bool MpmRenderer::ensureRhi()
@@ -121,6 +132,91 @@ void MpmRenderer::ensureCanvas()
     }
 }
 
+void MpmRenderer::ensureGrid()
+{
+    if (!m_rhi)
+        return;
+
+    const QSize base = m_swapChain ? m_swapChain->currentPixelSize() : m_viewSize;
+    if (!base.isValid() || base.isEmpty())
+        return;
+
+    // Downsample grid for stability/performance; finer grid (half-res) for better cohesion detail.
+    m_gridSize = QSize(std::max(64, base.width() / 2), std::max(64, base.height() / 2));
+
+    bool needVel = !m_gridVel || m_gridVel->pixelSize() != m_gridSize;
+    bool needMass = !m_gridMass || m_gridMass->pixelSize() != m_gridSize;
+
+    if (needVel) {
+        m_gridVel.reset(m_rhi->newTexture(QRhiTexture::RGBA16F, m_gridSize, 1, QRhiTexture::UsedWithLoadStore));
+        m_gridVel->create();
+    }
+    if (needMass) {
+        m_gridMass.reset(m_rhi->newTexture(QRhiTexture::R16F, m_gridSize, 1, QRhiTexture::UsedWithLoadStore));
+        m_gridMass->create();
+    }
+
+    bool needPressure = !m_gridPressure[0] || m_gridPressure[0]->pixelSize() != m_gridSize;
+
+    if (needVel) {
+        m_gridVel.reset(m_rhi->newTexture(QRhiTexture::RGBA16F, m_gridSize, 1, QRhiTexture::UsedWithLoadStore));
+        m_gridVel->create();
+    }
+    if (needMass) {
+        m_gridMass.reset(m_rhi->newTexture(QRhiTexture::R16F, m_gridSize, 1, QRhiTexture::UsedWithLoadStore));
+        m_gridMass->create();
+    }
+    if (needPressure) {
+        for (int i = 0; i < 2; ++i) {
+            m_gridPressure[i].reset(m_rhi->newTexture(QRhiTexture::R16F, m_gridSize, 1, QRhiTexture::UsedWithLoadStore));
+            m_gridPressure[i]->create();
+        }
+    }
+
+    if ((needVel || needMass || needPressure) && m_gridVel && m_gridMass) {
+        m_gridBindings.reset(m_rhi->newShaderResourceBindings());
+        m_gridBindings->setBindings({
+            QRhiShaderResourceBinding::imageLoadStore(0, QRhiShaderResourceBinding::ComputeStage, m_gridVel.get(), 0),
+            QRhiShaderResourceBinding::imageLoadStore(1, QRhiShaderResourceBinding::ComputeStage, m_gridMass.get(), 0)
+        });
+        m_gridBindings->create();
+
+        // Divergence binding: vel, mass, divergence
+        m_gridDivergenceBindings.reset(m_rhi->newShaderResourceBindings());
+        m_gridDivergenceBindings->setBindings({
+            QRhiShaderResourceBinding::imageLoad(0, QRhiShaderResourceBinding::ComputeStage, m_gridVel.get(), 0),
+            QRhiShaderResourceBinding::imageLoad(1, QRhiShaderResourceBinding::ComputeStage, m_gridMass.get(), 0),
+            QRhiShaderResourceBinding::imageStore(2, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[0].get(), 0) // reuse pressure[0] for divergence
+        });
+        m_gridDivergenceBindings->create();
+
+        // Pressure ping-pong bindings for Jacobi
+        m_gridJacobiBindings[0].reset(m_rhi->newShaderResourceBindings());
+        m_gridJacobiBindings[0]->setBindings({
+            QRhiShaderResourceBinding::imageLoad(0, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[0].get(), 0),
+            QRhiShaderResourceBinding::imageLoad(1, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[0].get(), 0), // divergence stored here
+            QRhiShaderResourceBinding::imageStore(2, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[1].get(), 0)
+        });
+        m_gridJacobiBindings[0]->create();
+
+        m_gridJacobiBindings[1].reset(m_rhi->newShaderResourceBindings());
+        m_gridJacobiBindings[1]->setBindings({
+            QRhiShaderResourceBinding::imageLoad(0, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[1].get(), 0),
+            QRhiShaderResourceBinding::imageLoad(1, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[0].get(), 0), // divergence stays in pressure[0]
+            QRhiShaderResourceBinding::imageStore(2, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[0].get(), 0)
+        });
+        m_gridJacobiBindings[1]->create();
+
+        // Subtract pressure: vel, pressure (use pressure[0] as final)
+        m_gridSubtractBindings.reset(m_rhi->newShaderResourceBindings());
+        m_gridSubtractBindings->setBindings({
+            QRhiShaderResourceBinding::imageLoadStore(0, QRhiShaderResourceBinding::ComputeStage, m_gridVel.get(), 0),
+            QRhiShaderResourceBinding::imageLoad(1, QRhiShaderResourceBinding::ComputeStage, m_gridPressure[0].get(), 0)
+        });
+        m_gridSubtractBindings->create();
+    }
+}
+
 void MpmRenderer::createParticleBuffer()
 {
     m_particles.resize(m_particleCount);
@@ -154,10 +250,19 @@ void MpmRenderer::ensurePipelines()
     }
 
     ensureCanvas();
+    ensureGrid();
 
     if (!m_viewParamsBuf) {
         m_viewParamsBuf.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(QVector4D)));
         m_viewParamsBuf->create();
+    }
+    if (!m_simParamsBuf) {
+        m_simParamsBuf.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(QVector4D)));
+        m_simParamsBuf->create();
+    }
+    if (!m_cohesionBuf) {
+        m_cohesionBuf.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(QVector4D)));
+        m_cohesionBuf->create();
     }
     if (!m_blurParamsBuf) {
         m_blurParamsBuf.reset(m_rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, sizeof(QVector4D)));
@@ -202,6 +307,28 @@ void MpmRenderer::ensurePipelines()
             });
             m_blurComputeBindings[i]->create();
         }
+    }
+
+    if (!m_particlesP2GBindings && m_particleBuffer && m_simParamsBuf && m_gridVel && m_gridMass) {
+        m_particlesP2GBindings.reset(m_rhi->newShaderResourceBindings());
+        m_particlesP2GBindings->setBindings({
+            QRhiShaderResourceBinding::bufferLoadStore(0, QRhiShaderResourceBinding::ComputeStage, m_particleBuffer.get()),
+            QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage, m_simParamsBuf.get()),
+            QRhiShaderResourceBinding::imageLoadStore(2, QRhiShaderResourceBinding::ComputeStage, m_gridVel.get(), 0),
+            QRhiShaderResourceBinding::imageLoadStore(3, QRhiShaderResourceBinding::ComputeStage, m_gridMass.get(), 0)
+        });
+        m_particlesP2GBindings->create();
+    }
+    if (!m_particlesG2PBindings && m_particleBuffer && m_simParamsBuf && m_gridVel && m_gridMass && m_gridPressure[0] && m_cohesionBuf) {
+        m_particlesG2PBindings.reset(m_rhi->newShaderResourceBindings());
+        m_particlesG2PBindings->setBindings({
+            QRhiShaderResourceBinding::bufferLoadStore(0, QRhiShaderResourceBinding::ComputeStage, m_particleBuffer.get()),
+            QRhiShaderResourceBinding::uniformBuffer(1, QRhiShaderResourceBinding::ComputeStage, m_simParamsBuf.get()),
+            QRhiShaderResourceBinding::imageLoad(2, QRhiShaderResourceBinding::ComputeStage, m_gridVel.get(), 0),
+            QRhiShaderResourceBinding::imageLoad(3, QRhiShaderResourceBinding::ComputeStage, m_gridMass.get(), 0),
+            QRhiShaderResourceBinding::uniformBuffer(4, QRhiShaderResourceBinding::ComputeStage, m_cohesionBuf.get())
+        });
+        m_particlesG2PBindings->create();
     }
 
     if (!m_splatPipeline && m_canvasRp[0]) {
@@ -280,6 +407,78 @@ void MpmRenderer::ensurePipelines()
             m_blurComputePipeline.reset();
         }
     }
+
+    if (!m_particlesP2GPipeline && m_particlesP2GBindings) {
+        m_particlesP2GPipeline.reset(m_rhi->newComputePipeline());
+        m_particlesP2GPipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/particles_p2g.comp.qsb"))});
+        m_particlesP2GPipeline->setShaderResourceBindings(m_particlesP2GBindings.get());
+        if (!m_particlesP2GPipeline->create()) {
+            qDebug() << "[compute] particles P2G pipeline creation failed; fallback to CPU.";
+            m_particlesP2GPipeline.reset();
+        }
+    }
+    if (!m_particlesG2PPipeline && m_particlesG2PBindings) {
+        m_particlesG2PPipeline.reset(m_rhi->newComputePipeline());
+        m_particlesG2PPipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/particles_g2p.comp.qsb"))});
+        m_particlesG2PPipeline->setShaderResourceBindings(m_particlesG2PBindings.get());
+        if (!m_particlesG2PPipeline->create()) {
+            qDebug() << "[compute] particles G2P pipeline creation failed; fallback to CPU.";
+            m_particlesG2PPipeline.reset();
+        }
+    }
+    if (!m_gridDivergencePipeline && m_gridDivergenceBindings) {
+        m_gridDivergencePipeline.reset(m_rhi->newComputePipeline());
+        m_gridDivergencePipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_divergence.comp.qsb"))});
+        m_gridDivergencePipeline->setShaderResourceBindings(m_gridDivergenceBindings.get());
+        if (!m_gridDivergencePipeline->create()) {
+            qDebug() << "[compute] grid divergence pipeline creation failed.";
+            m_gridDivergencePipeline.reset();
+        }
+    }
+    if (!m_gridJacobiPipeline && m_gridPressure[0] && m_gridPressure[1]) {
+        m_gridJacobiPipeline.reset(m_rhi->newComputePipeline());
+        m_gridJacobiPipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_jacobi.comp.qsb"))});
+        if (!m_gridJacobiPipeline->create()) {
+            qDebug() << "[compute] grid jacobi pipeline creation failed.";
+            m_gridJacobiPipeline.reset();
+        }
+    }
+    if (!m_gridSubtractPressurePipeline && m_gridSubtractBindings) {
+        m_gridSubtractPressurePipeline.reset(m_rhi->newComputePipeline());
+        m_gridSubtractPressurePipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_subtract_pressure.comp.qsb"))});
+        if (!m_gridSubtractPressurePipeline->create()) {
+            qDebug() << "[compute] grid subtract pressure pipeline creation failed.";
+            m_gridSubtractPressurePipeline.reset();
+        }
+    }
+
+    if (!m_gridClearPipeline && m_gridBindings) {
+        m_gridClearPipeline.reset(m_rhi->newComputePipeline());
+        m_gridClearPipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_clear.comp.qsb"))});
+        m_gridClearPipeline->setShaderResourceBindings(m_gridBindings.get());
+        if (!m_gridClearPipeline->create()) {
+            qDebug() << "[compute] grid clear pipeline creation failed.";
+            m_gridClearPipeline.reset();
+        }
+    }
+    if (!m_gridNormalizePipeline && m_gridBindings) {
+        m_gridNormalizePipeline.reset(m_rhi->newComputePipeline());
+        m_gridNormalizePipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_normalize.comp.qsb"))});
+        m_gridNormalizePipeline->setShaderResourceBindings(m_gridBindings.get());
+        if (!m_gridNormalizePipeline->create()) {
+            qDebug() << "[compute] grid normalize pipeline creation failed.";
+            m_gridNormalizePipeline.reset();
+        }
+    }
+    if (!m_gridSmoothPipeline && m_gridBindings) {
+        m_gridSmoothPipeline.reset(m_rhi->newComputePipeline());
+        m_gridSmoothPipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_smooth.comp.qsb"))});
+        m_gridSmoothPipeline->setShaderResourceBindings(m_gridBindings.get());
+        if (!m_gridSmoothPipeline->create()) {
+            qDebug() << "[compute] grid smooth pipeline creation failed.";
+            m_gridSmoothPipeline.reset();
+        }
+    }
 }
 
 void MpmRenderer::updateParticlesCpu(float dtSeconds)
@@ -336,10 +535,92 @@ void MpmRenderer::renderFrame(float dtSeconds)
         return;
 
     const QSize canvasSize = m_canvasTex[0] ? m_canvasTex[0]->pixelSize() : m_viewSize;
-    const QVector4D viewParams(float(canvasSize.width()), float(canvasSize.height()), 60.0f, 0.0f);   // radius in z
+    const QVector4D viewParams(float(canvasSize.width()), float(canvasSize.height()), 4.0f, 0.0f);   // radius in z
     rub->updateDynamicBuffer(m_viewParamsBuf.get(), 0, sizeof(QVector4D), &viewParams);
 
+    // Always keep CPU copy updated for rendering.
     updateParticlesCpu(dtSeconds);
+    const qsizetype bufferSizeParticles = qsizetype(m_particles.size() * sizeof(ParticleGpu));
+    rub->updateDynamicBuffer(m_particleBuffer.get(), 0, bufferSizeParticles, m_particles.data());
+
+    // If compute path available, run P2G -> normalize -> smooth -> G2P.
+    const QVector4D simParams(float(canvasSize.width()), float(canvasSize.height()), dtSeconds, 40.0f);
+    if (m_particlesP2GPipeline && m_particlesG2PPipeline && m_gridBindings) {
+        if (m_gridClearPipeline) {
+            cb->beginComputePass(rub);
+            cb->setComputePipeline(m_gridClearPipeline.get());
+            cb->setShaderResources(m_gridBindings.get());
+            cb->dispatch((m_gridSize.width() + 7) / 8, (m_gridSize.height() + 7) / 8, 1);
+            cb->endComputePass();
+            rub = m_rhi->nextResourceUpdateBatch();
+        }
+
+        rub->updateDynamicBuffer(m_simParamsBuf.get(), 0, sizeof(QVector4D), &simParams);
+
+        cb->beginComputePass(rub);
+        cb->setComputePipeline(m_particlesP2GPipeline.get());
+        cb->setShaderResources(m_particlesP2GBindings.get());
+        const int groups = (m_particleCount + 63) / 64;
+        cb->dispatch(groups, 1, 1);
+        cb->endComputePass();
+        rub = m_rhi->nextResourceUpdateBatch();
+
+        if (m_gridNormalizePipeline) {
+            cb->beginComputePass(rub);
+            cb->setComputePipeline(m_gridNormalizePipeline.get());
+            cb->setShaderResources(m_gridBindings.get());
+            cb->dispatch((m_gridSize.width() + 7) / 8, (m_gridSize.height() + 7) / 8, 1);
+            cb->endComputePass();
+            rub = m_rhi->nextResourceUpdateBatch();
+        }
+
+        if (m_gridSmoothPipeline) {
+            cb->beginComputePass(rub);
+            cb->setComputePipeline(m_gridSmoothPipeline.get());
+            cb->setShaderResources(m_gridBindings.get());
+            cb->dispatch((m_gridSize.width() + 7) / 8, (m_gridSize.height() + 7) / 8, 1);
+            cb->endComputePass();
+            rub = m_rhi->nextResourceUpdateBatch();
+        }
+
+        // Pressure solve
+        if (m_gridDivergencePipeline && m_gridJacobiPipeline && m_gridSubtractPressurePipeline && m_gridPressure[0] && m_gridPressure[1]) {
+            // divergence into pressure[0]
+            cb->beginComputePass(rub);
+            cb->setComputePipeline(m_gridDivergencePipeline.get());
+            cb->setShaderResources(m_gridDivergenceBindings.get());
+            cb->dispatch((m_gridSize.width() + 7) / 8, (m_gridSize.height() + 7) / 8, 1);
+            cb->endComputePass();
+            rub = m_rhi->nextResourceUpdateBatch();
+
+            // Jacobi iterations ping-pong between pressure[0] and pressure[1]
+            bool toggle = false;
+            for (int i = 0; i < m_pressureIterations; ++i) {
+                cb->beginComputePass(rub);
+                cb->setComputePipeline(m_gridJacobiPipeline.get());
+                QRhiShaderResourceBindings *bindings = toggle ? m_gridJacobiBindings[1].get() : m_gridJacobiBindings[0].get();
+                cb->setShaderResources(bindings);
+                cb->dispatch((m_gridSize.width() + 7) / 8, (m_gridSize.height() + 7) / 8, 1);
+                cb->endComputePass();
+                rub = m_rhi->nextResourceUpdateBatch();
+                toggle = !toggle;
+            }
+
+            cb->beginComputePass(rub);
+            cb->setComputePipeline(m_gridSubtractPressurePipeline.get());
+            cb->setShaderResources(m_gridSubtractBindings.get());
+            cb->dispatch((m_gridSize.width() + 7) / 8, (m_gridSize.height() + 7) / 8, 1);
+            cb->endComputePass();
+            rub = m_rhi->nextResourceUpdateBatch();
+        }
+
+        cb->beginComputePass(rub);
+        cb->setComputePipeline(m_particlesG2PPipeline.get());
+        cb->setShaderResources(m_particlesG2PBindings.get());
+        cb->dispatch((m_particleCount + 63) / 64, 1, 1);
+        cb->endComputePass();
+        rub = m_rhi->nextResourceUpdateBatch();
+    }
     // Apply mouse impulses: spawn new paint with velocity.
     const auto impulses = m_input.take();
     if (!impulses.empty()) {
@@ -361,6 +642,9 @@ void MpmRenderer::renderFrame(float dtSeconds)
                 p.velColor.setW(float(c.greenF()));
             }
         }
+        // Upload updated particles immediately for GPU path if compute is active.
+        const qsizetype bufferSize = qsizetype(m_particles.size() * sizeof(ParticleGpu));
+        rub->updateDynamicBuffer(m_particleBuffer.get(), 0, bufferSize, m_particles.data());
     }
 
     if (!m_instanceBuf) {
@@ -482,4 +766,32 @@ QRhiCommandBuffer *MpmRenderer::beginFrame(QRhiResourceUpdateBatch *&rub)
         return nullptr;
     }
     return m_swapChain->currentFrameCommandBuffer();
+}
+void MpmRenderer::shutdown()
+{
+    m_instanceBuf.reset();
+    m_particleBuffer.reset();
+    m_viewParamsBuf.reset();
+    m_blurParamsBuf.reset();
+
+    for (int i = 0; i < 2; ++i) {
+        m_canvasRt[i].reset();
+        m_canvasRp[i].reset();
+        m_canvasTex[i].reset();
+        m_presentBindings[i].reset();
+        m_blurBindings[i].reset();
+        m_blurComputeBindings[i].reset();
+    }
+
+    m_splatBindings.reset();
+    m_presentPipeline.reset();
+    m_splatPipeline.reset();
+    m_blurPipeline.reset();
+    m_blurComputePipeline.reset();
+    m_sampler.reset();
+    m_swapChain.reset();
+    m_swapChainPassDesc.reset();
+    m_depthStencil.reset();
+    m_rhi.reset();
+    m_fallbackSurface.reset();
 }

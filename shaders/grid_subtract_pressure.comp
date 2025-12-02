@@ -1,0 +1,24 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0, rgba16f) uniform coherent image2D gridVel;
+layout(binding = 1, r16f)    uniform coherent image2D pressure;
+
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(gridVel);
+    if (gid.x <= 0 || gid.y <= 0 || gid.x >= size.x - 1 || gid.y >= size.y - 1)
+        return;
+
+    float pL = imageLoad(pressure, gid + ivec2(-1, 0)).x;
+    float pR = imageLoad(pressure, gid + ivec2(1, 0)).x;
+    float pB = imageLoad(pressure, gid + ivec2(0, -1)).x;
+    float pT = imageLoad(pressure, gid + ivec2(0, 1)).x;
+
+    vec2 v = imageLoad(gridVel, gid).xy;
+    v.x -= (pR - pL) * 0.5;
+    v.y -= (pT - pB) * 0.5;
+    imageStore(gridVel, gid, vec4(v, 0.0, 0.0));
+}

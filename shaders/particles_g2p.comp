@@ -1,0 +1,63 @@
+#version 430
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct Particle {
+    vec4 pos;       // xy: position, w: blue
+    vec4 velColor;  // xy: velocity, zw: red/green
+};
+
+layout(std430, binding = 0) buffer ParticlesBuf {
+    Particle particles[];
+};
+
+layout(std140, binding = 1) uniform SimParams {
+    vec4 canvas_dt_gravity; // x,y: canvas size, z: dt, w: gravity
+};
+
+layout(binding = 2, rgba16f) uniform coherent image2D gridVel; // normalized velocity (xy) and centroid (zw)
+layout(binding = 3, r16f)    uniform coherent image2D gridMass;
+layout(std140, binding = 4) uniform Cohesion {
+    float strength;
+};
+
+const float INV_H = 1.0 / 4.0;
+
+vec4 sampleVel(vec2 pos)
+{
+    vec2 gpos = pos * INV_H;
+    ivec2 base = ivec2(floor(gpos));
+    vec2 frac = gpos - vec2(base);
+    vec2 wx = vec2(1.0 - frac.x, frac.x);
+    vec2 wy = vec2(1.0 - frac.y, frac.y);
+
+    vec4 v00 = imageLoad(gridVel, base + ivec2(0,0));
+    vec4 v10 = imageLoad(gridVel, base + ivec2(1,0));
+    vec4 v01 = imageLoad(gridVel, base + ivec2(0,1));
+    vec4 v11 = imageLoad(gridVel, base + ivec2(1,1));
+
+    vec4 v0 = mix(v00, v10, frac.x);
+    vec4 v1 = mix(v01, v11, frac.x);
+    return mix(v0, v1, frac.y);
+}
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= particles.length())
+        return;
+
+    Particle p = particles[idx];
+    vec4 velCenter = sampleVel(p.pos.xy);
+    vec2 velGrid = velCenter.xy;
+    vec2 center = velCenter.zw;
+    float m = imageLoad(gridMass, ivec2(p.pos.xy * INV_H)).x;
+    if (m < 1e-4)
+        velGrid = p.velColor.xy;
+    // Blend grid velocity into particle velocity
+    p.velColor.xy = mix(p.velColor.xy, velGrid, 0.6);
+    // Cohesion toward cell center
+    vec2 toCenter = center - p.pos.xy;
+    p.velColor.xy += toCenter * strength;
+    particles[idx] = p;
+}
