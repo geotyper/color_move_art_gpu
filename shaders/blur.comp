@@ -1,0 +1,33 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(binding = 0, rgba16f) uniform image2D dstImage;
+layout(binding = 1) uniform sampler2D srcTex;
+
+layout(std140, binding = 2) uniform BlurParams {
+    vec4 dir_decay; // xy: direction in UV, z: decay
+};
+
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstImage);
+    if (gid.x >= size.x || gid.y >= size.y)
+        return;
+
+    vec2 uv = (vec2(gid) + 0.5) / vec2(size);
+    vec2 dir = dir_decay.xy;
+    float decay = dir_decay.z;
+
+    vec4 c = texture(srcTex, uv) * 0.24;
+    c += texture(srcTex, uv + dir) * 0.20;
+    c += texture(srcTex, uv - dir) * 0.20;
+    c += texture(srcTex, uv + dir * 2.0) * 0.14;
+    c += texture(srcTex, uv - dir * 2.0) * 0.14;
+    c += texture(srcTex, uv + dir * 3.0) * 0.08;
+    c += texture(srcTex, uv - dir * 3.0) * 0.08;
+    c *= decay;
+
+    imageStore(dstImage, gid, c);
+}
