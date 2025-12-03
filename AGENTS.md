@@ -1,31 +1,31 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Keep source under `src/` (implementation) and `include/` (public headers) when adding C++ code; group features by module to ease reuse.
-- Place automated tests in `tests/` mirroring module names (e.g., `tests/color/test_palette.cpp` for `src/color/palette.cpp`).
-- Store reference assets and inspiration in `art_source/`; add new files with descriptive names and brief README notes when helpful.
-- Use `examples/` for small runnable sketches that demonstrate color-motion behaviors without pulling in the full app.
+- App code lives in `src/` (`main.cpp`, `app_window.*`, `mpm_renderer.*`, input helpers). Keep new features grouped by file, and prefer small translation units over mega-files.
+- Rendering and compute shaders sit in `shaders/`; they are baked by Qt’s `qt_add_shaders` into `.qsb` outputs inside `build/.qsb/` (generated, do not edit).
+- Reference artwork and inspiration are under `art_source/`. Leave originals untouched; add notes if you import new assets.
+- `source_examples/` holds external SPH reference material (lava-lamp sample); use it for ideas, not as a runtime dependency.
+- `build/` is the CMake build tree. Avoid committing its contents.
 
 ## Build, Test, and Development Commands
-- Configure once per machine: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug` to generate a local build tree.
-- Build: `cmake --build build` compiles all targets; add `--config Release` for optimized binaries if using multi-config generators.
-- Run tests: `ctest --test-dir build` executes all registered tests; use `-R name` to focus on a subset.
-- Local demo (if present in `examples/`): `./build/examples/<demo_name>`; keep example names short and intent-revealing.
+- Configure (Desktop Qt 6.6+ required for RHI + compute):  
+  `cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=$QT_ROOT/lib/cmake`
+- Build: `cmake --build build` (add `--config Release` for multi-config generators). Re-run this after editing any file under `shaders/` to re-bake `.qsb`.
+- Run the app from the build tree: `./build/color_move_art`. Set a backend explicitly if needed, e.g. `QT_RHI_BACKEND=vulkan` or `QT_RHI_BACKEND=opengl`.
+- Tests are not yet present; if you add them, wire them via CTest and run with `ctest --test-dir build`.
 
 ## Coding Style & Naming Conventions
-- Follow modern C++17+ style: prefer `std::unique_ptr`/`std::shared_ptr`, `enum class`, and `constexpr` where sensible.
-- Indent with 4 spaces; avoid tabs. Keep lines ≤ 100 characters.
-- File naming: snake_case for sources/headers (`color_field.cpp`), PascalCase for types, camelCase for functions/variables, SCREAMING_SNAKE_CASE for constants.
-- Use `clang-format` with a repository `.clang-format` once added; run it before commits (`clang-format -i src/**/*.cpp include/**/*.hpp`).
-- Keep functions single-purpose; extract helpers rather than inlining long lambdas in loops.
+- C++20 with Qt: 4-space indent, no tabs, keep lines ≲ 110 chars. Prefer `std::unique_ptr`, `std::array`, `enum class`, and range-for loops.
+- File names: snake_case for sources/headers (`mpm_renderer.cpp`), PascalCase for types, camelCase for functions/locals, SCREAMING_SNAKE_CASE for constants.
+- When touching many files, run `clang-format -i src/*.cpp src/*.h` (add a shared `.clang-format` if consistency drifts).
+- Keep GPU-facing structs tightly packed and mirrored between C++ and GLSL; update both sides together.
 
 ## Testing Guidelines
-- Prefer GoogleTest or Catch2; name test files `test_<module>.cpp` and test cases `Section`/`TEST` names that describe behavior, not method names.
-- Aim for fast, deterministic tests; avoid real file-system or network dependencies without fakes.
-- Add regression tests for every bug fix and new feature; keep `ctest` green before pushing.
+- Add lightweight, deterministic tests when introducing logic that is not purely visual (e.g., particle emitters, parameter mapping). Place them in `tests/` with names like `test_particles.cpp`.
+- Prefer Qt Test or Catch2; keep runtime short so `ctest` can run on every build.
 
 ## Commit & Pull Request Guidelines
-- Use concise, present-tense commit messages (recommended Conventional Commits, e.g., `feat: add hsv-to-rgb converter` or `fix: clamp color velocity`).
-- One topic per commit; include tests or notes on why tests are not applicable.
-- Pull requests should explain intent, link to any issues/tasks, and include screenshots or brief clips for visual changes (art assets or rendering tweaks).
-- Keep PRs small and reviewable; document any new dependencies or build flags in the description.
+- Use present-tense, concise commits (Conventional-style is welcome: `feat: add gpu sph grid`, `fix: stabilize pressure solve`).
+- One focused change per commit; include a note on testing (`ctest`, manual run, or “not applicable”).
+- PRs should summarize intent, call out new runtime flags (backend selection, shader params), and include screenshots/clips for visual changes.
+- Document any new assets or shader parameter defaults in the PR description to help reviewers reproduce visuals.

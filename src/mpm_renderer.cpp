@@ -225,8 +225,8 @@ void MpmRenderer::createParticleBuffer()
     for (int i = 0; i < m_particleCount; ++i) {
         const float x = rng.generateDouble() * float(canvas.width());
         const float y = rng.generateDouble() * float(canvas.height());
-        const float vx = (rng.generateDouble() - 0.5f) * 80.0f;
-        const float vy = (rng.generateDouble() - 0.5f) * 80.0f;
+        const float vx = (rng.generateDouble() - 0.5f) * 10.0f;
+        const float vy = (rng.generateDouble() - 0.5f) * 10.0f;
         const float hue = float(i) / float(m_particleCount);
         const QColor c = QColor::fromHslF(hue, 0.75, 0.5);
         ParticleGpu p {};
@@ -426,6 +426,16 @@ void MpmRenderer::ensurePipelines()
             m_particlesG2PPipeline.reset();
         }
     }
+    if (!m_particlesSphPipeline && m_gridMass && m_gridVel && m_particleBuffer && m_simParamsBuf) {
+        m_particlesSphPipeline.reset(m_rhi->newComputePipeline());
+        m_particlesSphPipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/particles_sph.comp.qsb"))});
+        // Reuse P2G bindings for mass/vel and particles, cohesion buffer can be omitted here.
+        m_particlesSphPipeline->setShaderResourceBindings(m_particlesP2GBindings.get());
+        if (!m_particlesSphPipeline->create()) {
+            qDebug() << "[compute] particles SPH pipeline creation failed.";
+            m_particlesSphPipeline.reset();
+        }
+    }
     if (!m_gridDivergencePipeline && m_gridDivergenceBindings) {
         m_gridDivergencePipeline.reset(m_rhi->newComputePipeline());
         m_gridDivergencePipeline->setShaderStage({QRhiShaderStage::Compute, loadShader(QStringLiteral(":/shaders/shaders/grid_divergence.comp.qsb"))});
@@ -483,27 +493,7 @@ void MpmRenderer::ensurePipelines()
 
 void MpmRenderer::updateParticlesCpu(float dtSeconds)
 {
-    const QSize canvas = m_swapChain ? m_swapChain->currentPixelSize() : QSize(1024, 1024);
-    for (auto &p : m_particles) {
-        QVector2D pos(p.pos.x(), p.pos.y());
-        QVector2D vel(p.velColor.x(), p.velColor.y());
-        vel += QVector2D(0.0f, 40.0f) * dtSeconds;
-        pos += vel * dtSeconds;
-
-        if (pos.x() < 0.0f || pos.x() > canvas.width()) {
-            vel.setX(-vel.x() * 0.8f);
-            pos.setX(std::clamp(pos.x(), 0.0f, float(canvas.width())));
-        }
-        if (pos.y() < 0.0f || pos.y() > canvas.height()) {
-            vel.setY(-vel.y() * 0.8f);
-            pos.setY(std::clamp(pos.y(), 0.0f, float(canvas.height())));
-        }
-
-        p.pos.setX(pos.x());
-        p.pos.setY(pos.y());
-        p.velColor.setX(vel.x());
-        p.velColor.setY(vel.y());
-    }
+    Q_UNUSED(dtSeconds);
 }
 
 void MpmRenderer::renderFrame(float dtSeconds)
@@ -537,14 +527,17 @@ void MpmRenderer::renderFrame(float dtSeconds)
     const QSize canvasSize = m_canvasTex[0] ? m_canvasTex[0]->pixelSize() : m_viewSize;
     const QVector4D viewParams(float(canvasSize.width()), float(canvasSize.height()), 4.0f, 0.0f);   // radius in z
     rub->updateDynamicBuffer(m_viewParamsBuf.get(), 0, sizeof(QVector4D), &viewParams);
+    // Clamp dt to avoid explosions.
+    float clampedDt = std::clamp(dtSeconds, 0.0f, 0.010f);
+    const QVector4D simParams(float(canvasSize.width()), float(canvasSize.height()), clampedDt, 40.0f);
+    const QVector4D cohesionParams(m_cohesion, 0.0f, 0.0f, 0.0f);
+    rub->updateDynamicBuffer(m_simParamsBuf.get(), 0, sizeof(QVector4D), &simParams);
+    rub->updateDynamicBuffer(m_cohesionBuf.get(), 0, sizeof(QVector4D), &cohesionParams);
 
-    // Always keep CPU copy updated for rendering.
-    updateParticlesCpu(dtSeconds);
     const qsizetype bufferSizeParticles = qsizetype(m_particles.size() * sizeof(ParticleGpu));
     rub->updateDynamicBuffer(m_particleBuffer.get(), 0, bufferSizeParticles, m_particles.data());
 
-    // If compute path available, run P2G -> normalize -> smooth -> G2P.
-    const QVector4D simParams(float(canvasSize.width()), float(canvasSize.height()), dtSeconds, 40.0f);
+    // If compute path available, run P2G -> normalize -> smooth -> pressure -> G2P.
     if (m_particlesP2GPipeline && m_particlesG2PPipeline && m_gridBindings) {
         if (m_gridClearPipeline) {
             cb->beginComputePass(rub);
@@ -654,11 +647,11 @@ void MpmRenderer::renderFrame(float dtSeconds)
     }
 
     {
-        std::vector<QVector4D> inst(m_particles.size());
-        for (qsizetype i = 0; i < m_particles.size(); ++i) {
-            const auto &p = m_particles[i];
-            inst[i] = QVector4D(p.pos.x(), p.pos.y(), p.velColor.z(), p.velColor.w()); // pos.xy, color RG (B in pos.w)
-        }
+    std::vector<QVector4D> inst(m_particles.size());
+    for (qsizetype i = 0; i < m_particles.size(); ++i) {
+        const auto &p = m_particles[i];
+        inst[i] = QVector4D(p.pos.x(), p.pos.y(), p.velColor.z(), p.velColor.w()); // pos.xy, color RG (B in pos.w)
+    }
         const qsizetype bufferSize = qsizetype(inst.size() * sizeof(QVector4D));
         rub->updateDynamicBuffer(m_instanceBuf.get(), 0, bufferSize, inst.data());
     }

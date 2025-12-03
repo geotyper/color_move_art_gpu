@@ -37,6 +37,7 @@ private:
     void ensurePipelines();
     void createParticleBuffer();
     void updateParticlesCpu(float dtSeconds);
+    // GPU path handles simulation; no CPU grid rebuild.
     void ensureCanvas();
     void ensureGrid();
     QRhiCommandBuffer *beginFrame(QRhiResourceUpdateBatch *&rub);
@@ -70,6 +71,7 @@ private:
     std::unique_ptr<QRhiComputePipeline> m_gridSubtractPressurePipeline;
     std::unique_ptr<QRhiComputePipeline> m_particlesP2GPipeline;
     std::unique_ptr<QRhiComputePipeline> m_particlesG2PPipeline;
+    std::unique_ptr<QRhiComputePipeline> m_particlesSphPipeline;
     std::unique_ptr<QRhiBuffer> m_particleBuffer;
     std::unique_ptr<QRhiBuffer> m_viewParamsBuf;
     std::unique_ptr<QRhiBuffer> m_simParamsBuf;
@@ -89,6 +91,13 @@ private:
     MouseInput m_input;
     QSize m_viewSize;
     int m_particleCount {4000};
+    float m_smoothingLength {12.0f};
+    float m_particleMass {1.0f};
+    float m_restDensity {15.0f};
+    float m_stiffness {0.6f};
+    float m_nearStiffness {1.5f};
+    float m_linearVisc {0.2f};
+    float m_quadraticVisc {0.1f};
     int m_canvasIndex {0};
     bool m_particlesPendingUpload {false};
     bool m_canvasInitialized {false};
@@ -96,6 +105,6 @@ private:
     QSize m_gridSize {256, 256};
     int m_pressureIterations {8};
     float m_viscosityBlend {0.35f};
-    float m_globalDrag {0.98f};
-    float m_cohesion {0.35f};
+    float m_globalDrag {0.99f};
+    float m_cohesion {1.2f};
 };

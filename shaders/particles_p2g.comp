@@ -18,7 +18,7 @@ layout(std140, binding = 1) uniform SimParams {
 layout(binding = 2, rgba16f) uniform coherent image2D gridVel; // xy velocity sum
 layout(binding = 3, r16f)    uniform coherent image2D gridMass; // mass
 
-const float INV_H = 1.0 / 4.0; // grid cell size in pixels (assumed 4)
+const float INV_H = 1.0 / 2.0; // grid cell size in pixels (assumed 2 for finer grid)
 
 vec2 toGrid(vec2 pos) { return pos * INV_H; }
 
@@ -64,10 +64,11 @@ void main()
     vel *= 0.98; // global drag
     pos += vel * dt;
 
-    if (pos.x < 0.0) { pos.x = 0.0; vel.x = -vel.x * 0.8; }
-    if (pos.x > canvasSize.x) { pos.x = canvasSize.x; vel.x = -vel.x * 0.8; }
-    if (pos.y < 0.0) { pos.y = 0.0; vel.y = -vel.y * 0.8; }
-    if (pos.y > canvasSize.y) { pos.y = canvasSize.y; vel.y = -vel.y * 0.8; }
+    const float bounce = 0.5;
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x = -vel.x * bounce; }
+    if (pos.x > canvasSize.x) { pos.x = canvasSize.x; vel.x = -vel.x * bounce; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y = -vel.y * bounce; }
+    if (pos.y > canvasSize.y) { pos.y = canvasSize.y; vel.y = -vel.y * bounce; }
 
     p.pos.xy = pos;
     p.velColor.xy = vel;
