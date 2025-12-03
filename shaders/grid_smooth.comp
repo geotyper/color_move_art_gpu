@@ -5,12 +5,18 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(binding = 0, rgba16f) uniform coherent image2D gridVel; // xy velocity
 layout(binding = 1, r16f)    uniform coherent image2D gridMass;
 
+ivec2 wrapCoord(ivec2 p, ivec2 size)
+{
+    return ivec2((p.x % size.x + size.x) % size.x,
+                 (p.y % size.y + size.y) % size.y);
+}
+
 // Simple viscosity-like smoothing: average neighbors weighted by mass, with self-bias.
 void main()
 {
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(gridVel);
-    if (gid.x <= 0 || gid.y <= 0 || gid.x >= size.x - 1 || gid.y >= size.y - 1)
+    if (gid.x >= size.x || gid.y >= size.y)
         return;
 
     float mC = imageLoad(gridMass, gid).x + 1e-6;
@@ -21,7 +27,7 @@ void main()
 
     ivec2 offsets[4] = ivec2[](ivec2(1,0), ivec2(-1,0), ivec2(0,1), ivec2(0,-1));
     for (int i = 0; i < 4; ++i) {
-        ivec2 p = gid + offsets[i];
+        ivec2 p = wrapCoord(gid + offsets[i], size);
         float m = imageLoad(gridMass, p).x;
         vec2 v = imageLoad(gridVel, p).xy;
         sumV += v * m;

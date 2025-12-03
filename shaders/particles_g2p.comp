@@ -23,6 +23,22 @@ layout(std140, binding = 4) uniform Cohesion {
 
 const float INV_H = 1.0 / 2.0;
 
+ivec2 wrapGrid(ivec2 p, ivec2 size)
+{
+    return ivec2((p.x % size.x + size.x) % size.x,
+                 (p.y % size.y + size.y) % size.y);
+}
+
+vec2 shortestDelta(vec2 from, vec2 to, vec2 canvas)
+{
+    vec2 delta = to - from;
+    if (delta.x > 0.5 * canvas.x) delta.x -= canvas.x;
+    if (delta.x < -0.5 * canvas.x) delta.x += canvas.x;
+    if (delta.y > 0.5 * canvas.y) delta.y -= canvas.y;
+    if (delta.y < -0.5 * canvas.y) delta.y += canvas.y;
+    return delta;
+}
+
 vec4 sampleVel(vec2 pos)
 {
     vec2 gpos = pos * INV_H;
@@ -31,10 +47,16 @@ vec4 sampleVel(vec2 pos)
     vec2 wx = vec2(1.0 - frac.x, frac.x);
     vec2 wy = vec2(1.0 - frac.y, frac.y);
 
-    vec4 v00 = imageLoad(gridVel, base + ivec2(0,0));
-    vec4 v10 = imageLoad(gridVel, base + ivec2(1,0));
-    vec4 v01 = imageLoad(gridVel, base + ivec2(0,1));
-    vec4 v11 = imageLoad(gridVel, base + ivec2(1,1));
+    ivec2 size = imageSize(gridVel);
+    ivec2 p00 = wrapGrid(base + ivec2(0, 0), size);
+    ivec2 p10 = wrapGrid(base + ivec2(1, 0), size);
+    ivec2 p01 = wrapGrid(base + ivec2(0, 1), size);
+    ivec2 p11 = wrapGrid(base + ivec2(1, 1), size);
+
+    vec4 v00 = imageLoad(gridVel, p00);
+    vec4 v10 = imageLoad(gridVel, p10);
+    vec4 v01 = imageLoad(gridVel, p01);
+    vec4 v11 = imageLoad(gridVel, p11);
 
     vec4 v0 = mix(v00, v10, frac.x);
     vec4 v1 = mix(v01, v11, frac.x);
@@ -51,13 +73,16 @@ void main()
     vec4 velCenter = sampleVel(p.pos.xy);
     vec2 velGrid = velCenter.xy;
     vec2 center = velCenter.zw;
-    float m = imageLoad(gridMass, ivec2(p.pos.xy * INV_H)).x;
+    ivec2 massSize = imageSize(gridMass);
+    ivec2 massCoord = wrapGrid(ivec2(p.pos.xy * INV_H), massSize);
+    float m = imageLoad(gridMass, massCoord).x;
     if (m < 1e-4)
         velGrid = p.velColor.xy;
     // Blend grid velocity into particle velocity
     p.velColor.xy = mix(p.velColor.xy, velGrid, 0.6);
     // Cohesion toward cell center
-    vec2 toCenter = center - p.pos.xy;
+    vec2 canvas = canvas_dt_gravity.xy;
+    vec2 toCenter = shortestDelta(p.pos.xy, center, canvas);
     p.velColor.xy += toCenter * strength;
     particles[idx] = p;
 }

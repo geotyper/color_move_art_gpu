@@ -6,11 +6,17 @@ layout(binding = 0, rgba16f) uniform coherent image2D gridVel;
 layout(binding = 1, r16f)    uniform coherent image2D gridMass;
 layout(binding = 2, r16f)    uniform coherent image2D gridDivergence;
 
+ivec2 wrapCoord(ivec2 p, ivec2 size)
+{
+    return ivec2((p.x % size.x + size.x) % size.x,
+                 (p.y % size.y + size.y) % size.y);
+}
+
 void main()
 {
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(gridVel);
-    if (gid.x <= 0 || gid.y <= 0 || gid.x >= size.x - 1 || gid.y >= size.y - 1)
+    if (gid.x >= size.x || gid.y >= size.y)
         return;
 
     float m = imageLoad(gridMass, gid).x;
@@ -19,10 +25,10 @@ void main()
         return;
     }
 
-    vec2 vL = imageLoad(gridVel, gid + ivec2(-1, 0)).xy;
-    vec2 vR = imageLoad(gridVel, gid + ivec2(1, 0)).xy;
-    vec2 vB = imageLoad(gridVel, gid + ivec2(0, -1)).xy;
-    vec2 vT = imageLoad(gridVel, gid + ivec2(0, 1)).xy;
+    vec2 vL = imageLoad(gridVel, wrapCoord(gid + ivec2(-1, 0), size)).xy;
+    vec2 vR = imageLoad(gridVel, wrapCoord(gid + ivec2(1, 0), size)).xy;
+    vec2 vB = imageLoad(gridVel, wrapCoord(gid + ivec2(0, -1), size)).xy;
+    vec2 vT = imageLoad(gridVel, wrapCoord(gid + ivec2(0, 1), size)).xy;
 
     float div = (vR.x - vL.x + vT.y - vB.y) * 0.5;
     imageStore(gridDivergence, gid, vec4(div));

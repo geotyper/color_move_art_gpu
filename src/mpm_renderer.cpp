@@ -245,7 +245,7 @@ void MpmRenderer::ensurePipelines()
 {
     if (!m_sampler) {
         m_sampler.reset(m_rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None,
-                                          QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
+                                          QRhiSampler::Repeat, QRhiSampler::Repeat));
         m_sampler->create();
     }
 

@@ -6,17 +6,23 @@ layout(binding = 0, r16f)    uniform coherent image2D pressureIn;
 layout(binding = 1, r16f)    uniform coherent image2D divergence;
 layout(binding = 2, r16f)    uniform coherent image2D pressureOut;
 
+ivec2 wrapCoord(ivec2 p, ivec2 size)
+{
+    return ivec2((p.x % size.x + size.x) % size.x,
+                 (p.y % size.y + size.y) % size.y);
+}
+
 void main()
 {
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(pressureIn);
-    if (gid.x <= 0 || gid.y <= 0 || gid.x >= size.x - 1 || gid.y >= size.y - 1)
+    if (gid.x >= size.x || gid.y >= size.y)
         return;
 
-    float pL = imageLoad(pressureIn, gid + ivec2(-1, 0)).x;
-    float pR = imageLoad(pressureIn, gid + ivec2(1, 0)).x;
-    float pB = imageLoad(pressureIn, gid + ivec2(0, -1)).x;
-    float pT = imageLoad(pressureIn, gid + ivec2(0, 1)).x;
+    float pL = imageLoad(pressureIn, wrapCoord(gid + ivec2(-1, 0), size)).x;
+    float pR = imageLoad(pressureIn, wrapCoord(gid + ivec2(1, 0), size)).x;
+    float pB = imageLoad(pressureIn, wrapCoord(gid + ivec2(0, -1), size)).x;
+    float pT = imageLoad(pressureIn, wrapCoord(gid + ivec2(0, 1), size)).x;
 
     float div = imageLoad(divergence, gid).x;
     float p = (pL + pR + pB + pT - div) * 0.25;

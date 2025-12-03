@@ -20,6 +20,25 @@ layout(binding = 3, r16f)    uniform coherent image2D gridMass; // mass
 
 const float INV_H = 1.0 / 2.0; // grid cell size in pixels (assumed 2 for finer grid)
 
+ivec2 wrapGrid(ivec2 p, ivec2 size)
+{
+    return ivec2((p.x % size.x + size.x) % size.x,
+                 (p.y % size.y + size.y) % size.y);
+}
+
+vec2 wrapPosForCell(vec2 pos, ivec2 cell)
+{
+    vec2 canvas = canvas_dt_gravity.xy;
+    vec2 cellPos = (vec2(cell) + 0.5) / INV_H;
+    vec2 wrapped = pos;
+    vec2 diff = wrapped - cellPos;
+    if (diff.x > 0.5 * canvas.x) wrapped.x -= canvas.x;
+    if (diff.x < -0.5 * canvas.x) wrapped.x += canvas.x;
+    if (diff.y > 0.5 * canvas.y) wrapped.y -= canvas.y;
+    if (diff.y < -0.5 * canvas.y) wrapped.y += canvas.y;
+    return wrapped;
+}
+
 vec2 toGrid(vec2 pos) { return pos * INV_H; }
 
 void splatToGrid(vec2 pos, vec2 vel) {
@@ -34,16 +53,30 @@ void splatToGrid(vec2 pos, vec2 vel) {
     float w01 = wx.x * wy.y;
     float w11 = wx.y * wy.y;
 
-    imageStore(gridMass, base + ivec2(0,0), imageLoad(gridMass, base + ivec2(0,0)) + vec4(w00));
-    imageStore(gridMass, base + ivec2(1,0), imageLoad(gridMass, base + ivec2(1,0)) + vec4(w10));
-    imageStore(gridMass, base + ivec2(0,1), imageLoad(gridMass, base + ivec2(0,1)) + vec4(w01));
-    imageStore(gridMass, base + ivec2(1,1), imageLoad(gridMass, base + ivec2(1,1)) + vec4(w11));
+    ivec2 size = imageSize(gridMass);
+    ivec2 p00 = wrapGrid(base + ivec2(0, 0), size);
+    ivec2 p10 = wrapGrid(base + ivec2(1, 0), size);
+    ivec2 p01 = wrapGrid(base + ivec2(0, 1), size);
+    ivec2 p11 = wrapGrid(base + ivec2(1, 1), size);
 
-    vec4 v = vec4(vel, pos);
-    imageStore(gridVel, base + ivec2(0,0), imageLoad(gridVel, base + ivec2(0,0)) + v * w00);
-    imageStore(gridVel, base + ivec2(1,0), imageLoad(gridVel, base + ivec2(1,0)) + v * w10);
-    imageStore(gridVel, base + ivec2(0,1), imageLoad(gridVel, base + ivec2(0,1)) + v * w01);
-    imageStore(gridVel, base + ivec2(1,1), imageLoad(gridVel, base + ivec2(1,1)) + v * w11);
+    imageStore(gridMass, p00, imageLoad(gridMass, p00) + vec4(w00));
+    imageStore(gridMass, p10, imageLoad(gridMass, p10) + vec4(w10));
+    imageStore(gridMass, p01, imageLoad(gridMass, p01) + vec4(w01));
+    imageStore(gridMass, p11, imageLoad(gridMass, p11) + vec4(w11));
+
+    ivec2 vSize = imageSize(gridVel);
+    ivec2 c00 = wrapGrid(base + ivec2(0, 0), vSize);
+    ivec2 c10 = wrapGrid(base + ivec2(1, 0), vSize);
+    ivec2 c01 = wrapGrid(base + ivec2(0, 1), vSize);
+    ivec2 c11 = wrapGrid(base + ivec2(1, 1), vSize);
+    vec4 s00 = vec4(vel, wrapPosForCell(pos, c00));
+    vec4 s10 = vec4(vel, wrapPosForCell(pos, c10));
+    vec4 s01 = vec4(vel, wrapPosForCell(pos, c01));
+    vec4 s11 = vec4(vel, wrapPosForCell(pos, c11));
+    imageStore(gridVel, c00, imageLoad(gridVel, c00) + s00 * w00);
+    imageStore(gridVel, c10, imageLoad(gridVel, c10) + s10 * w10);
+    imageStore(gridVel, c01, imageLoad(gridVel, c01) + s01 * w01);
+    imageStore(gridVel, c11, imageLoad(gridVel, c11) + s11 * w11);
 }
 
 void main()
@@ -64,11 +97,7 @@ void main()
     vel *= 0.98; // global drag
     pos += vel * dt;
 
-    const float bounce = 0.5;
-    if (pos.x < 0.0) { pos.x = 0.0; vel.x = -vel.x * bounce; }
-    if (pos.x > canvasSize.x) { pos.x = canvasSize.x; vel.x = -vel.x * bounce; }
-    if (pos.y < 0.0) { pos.y = 0.0; vel.y = -vel.y * bounce; }
-    if (pos.y > canvasSize.y) { pos.y = canvasSize.y; vel.y = -vel.y * bounce; }
+    pos = mod(pos + canvasSize, canvasSize); // toroidal wrap
 
     p.pos.xy = pos;
     p.velColor.xy = vel;
